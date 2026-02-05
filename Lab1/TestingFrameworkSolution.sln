@@ -3,13 +3,13 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestRunner", "TestRunner\TestRunner.csproj", "{A19B22D1-4121-433A-BC6C-91841E06C0F7}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyTestFramework", "MyTestFramework\MyTestFramework.csproj", "{84F81DB9-36FC-4DCD-8413-658E9C47CA3C}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrderProcessingSystem", "OrderProcessingSystem\OrderProcessingSystem.csproj", "{5096CA0D-445D-42F3-A81B-7E505E825E15}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrderTests", "OrderTests\OrderTests.csproj", "{EF20983F-A788-4FD1-965D-A749665AE5B2}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestRunner", "TestRunner\TestRunner.csproj", "{A19B22D1-4121-433A-BC6C-91841E06C0F7}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
