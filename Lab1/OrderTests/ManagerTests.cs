@@ -16,6 +16,12 @@ namespace OrderTests
             _manager = new OrderManager();
         }
 
+        [Teardown]
+        public void AfterEach()
+        {
+            _manager = null;
+        }
+
         // ПАРАМЕТРИЗОВАННЫЕ ТЕСТЫ (DataRow)
         [TestMethod("Тест расчета итоговой суммы со скидкой")]
         [DataRow(0, 1000)]    // Без скидки
@@ -91,12 +97,6 @@ namespace OrderTests
             Assert.AreEqual(0, _manager.ProductCount);
         }
 
-        [Teardown]
-        public void AfterEach()
-        {
-            _manager = null;
-        }
-
         // ТЕСТЫ, КОТОРЫЕ НЕ ДОЛЖНЫ ПРОЙТИ
 
         [TestMethod("Специально проваленный тест: неверная сумма")]
@@ -122,6 +122,66 @@ namespace OrderTests
         {
             _manager.AddProduct(new Product { Name = "Promo", Price = 1000m });
             Assert.AreEqual((decimal)expected, _manager.CalculateTotal((decimal)discount));
+        }
+
+        [TestMethod]
+        public async Task LongRunningTest()
+        {
+            await Task.Delay(1000);
+            Assert.IsTrue(true);
+        }
+
+        // Тест с тайм-аутом: должен УСПЕТЬ
+        [TestMethod]
+        [Timeout(2000)]
+        public async Task TimeoutSuccessTest()
+        {
+            await Task.Delay(500);
+            Assert.IsTrue(true);
+        }
+
+        // Тест с тайм-аутом: должен ПРЕРВАТЬСЯ
+        [TestMethod]
+        [Timeout(500)]
+        public async Task TimeoutFailTest()
+        {
+            await Task.Delay(2000); // Спит дольше, чем разрешено
+            Assert.IsTrue(true);
+        }
+
+        // Специальный тест, имитирующий долгую загрузку данных (500 мс)
+        // С помощью DataRow мы заставляем его запуститься 10 раз
+        [TestMethod("Тяжелый тест имитации загрузки")]
+        [DataRow(1)]
+        [DataRow(2)]
+        [DataRow(3)]
+        [DataRow(4)]
+        [DataRow(5)]
+        [DataRow(6)]
+        [DataRow(7)]
+        [DataRow(8)]
+        [DataRow(9)]
+        [DataRow(10)]
+        public async Task HeavyWorkTest(int iteration)
+        {
+            await Task.Delay(500); // Имитация работы
+            Assert.IsTrue(true);
+        }
+
+        [TestMethod("Тест с критическим временем выполнения")]
+        [Timeout(800)] // Успеет, так как спит 600
+        public async Task TimeoutSuccess()
+        {
+            await Task.Delay(600);
+            Assert.IsTrue(true);
+        }
+
+        [TestMethod("Тест, который будет прерван по тайм-ауту")]
+        [Timeout(300)] // НЕ успеет, так как спит 1000
+        public async Task TimeoutFailure()
+        {
+            await Task.Delay(1000);
+            Assert.IsTrue(true);
         }
     }
 }

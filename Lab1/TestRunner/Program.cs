@@ -1,93 +1,204 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using MyTestFramework;
 using OrderTests;
 
 class Program
 {
+    private static readonly object _consoleLock = new object();
+
     static async Task Main(string[] args)
     {
-        Console.WriteLine("Tests running");
+        int maxParallelism = 5; // Настройте количество потоков здесь
 
+        Console.WriteLine("=== ЛАБОРАТОРНАЯ РАБОТА №2: СРАВНЕНИЕ ЭФФЕКТИВНОСТИ ===\n");
+
+        // 1. СТРОГО ПОСЛЕДОВАТЕЛЬНЫЙ ЗАПУСК
+        var sw = Stopwatch.StartNew();
+        await RunAllTests(parallel: false, maxParallelism: 1);
+        sw.Stop();
+        long sequentialTime = sw.ElapsedMilliseconds;
+
+        Console.WriteLine($"\n> Время последовательного выполнения: {sequentialTime} ms\n");
+        Console.WriteLine(new string('=', 50));
+
+        // 2. ПАРАЛЛЕЛЬНЫЙ ЗАПУСК
+        sw.Restart();
+        await RunAllTests(parallel: true, maxParallelism: maxParallelism);
+        sw.Stop();
+        long parallelTime = sw.ElapsedMilliseconds;
+
+        Console.WriteLine($"\n> Время параллельного выполнения ({maxParallelism} потока): {parallelTime} ms");
+        Console.WriteLine($"> Ускорение: {(double)sequentialTime / parallelTime:F2}x");
+    }
+
+    static async Task RunAllTests(bool parallel, int maxParallelism)
+    {
         var assembly = typeof(ManagerTests).Assembly;
-        var testClasses = assembly.GetTypes()
-            .Where(t => t.GetCustomAttribute<TestClassAttribute>() != null);
+
+        // ВЫЗОВ ТОГО САМОГО МЕТОДА, КОТОРОГО НЕ ХВАТАЛО
+        var allTestJobs = DiscoverTests(assembly);
 
         int passed = 0, failed = 0, skipped = 0;
 
+        if (!parallel)
+        {
+            Console.WriteLine($"Запуск {allTestJobs.Count} тестов ПОСЛЕДОВАТЕЛЬНО...");
+            foreach (var job in allTestJobs)
+            {
+                var result = await ExecuteSingleTest(job);
+                if (result == TestStatus.Passed) passed++;
+                else if (result == TestStatus.Failed) failed++;
+                else skipped++;
+            }
+        }
+        else
+        {
+            Console.WriteLine($"Запуск {allTestJobs.Count} тестов ПАРАЛЛЕЛЬНО ({maxParallelism} потока)...");
+            using var semaphore = new SemaphoreSlim(maxParallelism);
+
+            var tasks = allTestJobs.Select(async job =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    var result = await ExecuteSingleTest(job);
+                    if (result == TestStatus.Passed) Interlocked.Increment(ref passed);
+                    else if (result == TestStatus.Failed) Interlocked.Increment(ref failed);
+                    else Interlocked.Increment(ref skipped);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }).ToList();
+
+            await Task.WhenAll(tasks);
+        }
+
+        Console.WriteLine($"\nРезультат: Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
+    }
+
+    // МЕТОД ДЛЯ СБОРА ТЕСТОВ (DISCOVERY)
+    static List<TestJob> DiscoverTests(Assembly assembly)
+    {
+        var jobs = new List<TestJob>();
+        var testClasses = assembly.GetTypes()
+            .Where(t => t.GetCustomAttribute<TestClassAttribute>() != null);
+
         foreach (var type in testClasses)
         {
-            Console.WriteLine($"\nClass execution: {type.Name}");
             var methods = type.GetMethods();
-
             var setup = methods.FirstOrDefault(m => m.GetCustomAttribute<SetupAttribute>() != null);
             var teardown = methods.FirstOrDefault(m => m.GetCustomAttribute<TeardownAttribute>() != null);
 
-            // Сортировка по Priority
             var tests = methods
                 .Where(m => m.GetCustomAttribute<TestMethodAttribute>() != null)
                 .OrderBy(m => m.GetCustomAttribute<TestMethodAttribute>().Priority);
 
             foreach (var test in tests)
             {
-                // Проверка на наличие отдельного атрибута [Ignore]
-                if (test.GetCustomAttribute<IgnoreAttribute>() != null)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($" -> {test.Name} ... Skipped");
-                    Console.ResetColor();
-                    skipped++;
-                    continue;
-                }
-
-                var instance = Activator.CreateInstance(type);
                 var dataRows = test.GetCustomAttributes<DataRowAttribute>().ToList();
-                var testRuns = dataRows.Any() ? dataRows.Select(d => d.Data).ToList() : new List<object[]> { null };
+                var runs = dataRows.Any() ? dataRows.Select(d => d.Data).ToList() : new List<object[]> { null };
 
-                foreach (var paramsData in testRuns)
+                foreach (var data in runs)
                 {
-                    string info = paramsData != null ? $" [{string.Join(", ", paramsData)}]" : "";
-                    Console.Write($" -> {test.Name}{info} ... ");
-
-                    try
+                    jobs.Add(new TestJob
                     {
-                        setup?.Invoke(instance, null);
-
-                        object[] convertedParams = null;
-                        if (paramsData != null)
-                        {
-                            var methodParams = test.GetParameters();
-                            convertedParams = new object[paramsData.Length];
-                            for (int i = 0; i < paramsData.Length; i++)
-                                convertedParams[i] = Convert.ChangeType(paramsData[i], methodParams[i].ParameterType);
-                        }
-
-                        var result = test.Invoke(instance, convertedParams);
-                        if (result is Task task) await task;
-
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("OK");
-                        passed++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        var inner = ex is TargetInvocationException ? ex.InnerException : ex;
-                        Console.WriteLine(inner is TestAssertionException ? $"Failed: {inner.Message}" : $"Error: {inner.Message}");
-                        failed++;
-                    }
-                    finally
-                    {
-                        teardown?.Invoke(instance, null);
-                        Console.ResetColor();
-                    }
+                        ClassType = type,
+                        Method = test,
+                        Setup = setup,
+                        Teardown = teardown,
+                        Data = data
+                    });
                 }
             }
         }
-        Console.WriteLine("\n" + new string('-', 30));
-        Console.WriteLine($"Total: Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
+        return jobs;
     }
+
+    static async Task<TestStatus> ExecuteSingleTest(TestJob job)
+    {
+        if (job.Method.GetCustomAttribute<IgnoreAttribute>() != null)
+        {
+            LogResult(job, "Skipped", ConsoleColor.Yellow);
+            return TestStatus.Skipped;
+        }
+
+        var timeoutAttr = job.Method.GetCustomAttribute<TimeoutAttribute>();
+        var instance = Activator.CreateInstance(job.ClassType);
+
+        try
+        {
+            job.Setup?.Invoke(instance, null);
+
+            object[] convertedParams = null;
+            if (job.Data != null)
+            {
+                var methodParams = job.Method.GetParameters();
+                convertedParams = new object[job.Data.Length];
+                for (int i = 0; i < job.Data.Length; i++)
+                    convertedParams[i] = Convert.ChangeType(job.Data[i], methodParams[i].ParameterType);
+            }
+
+            // Запуск теста с поддержкой тайм-аута
+            var testTask = Task.Run(async () => {
+                var res = job.Method.Invoke(instance, convertedParams);
+                if (res is Task t) await t;
+            });
+
+            if (timeoutAttr != null)
+            {
+                if (await Task.WhenAny(testTask, Task.Delay(timeoutAttr.Milliseconds)) != testTask)
+                {
+                    LogResult(job, $"Timeout (> {timeoutAttr.Milliseconds}ms)", ConsoleColor.Red);
+                    return TestStatus.Failed;
+                }
+            }
+
+            await testTask;
+            LogResult(job, "OK", ConsoleColor.Green);
+            return TestStatus.Passed;
+        }
+        catch (Exception ex)
+        {
+            var inner = ex is TargetInvocationException ? ex.InnerException : ex;
+            LogResult(job, $"Failed: {inner.Message}", ConsoleColor.Red);
+            return TestStatus.Failed;
+        }
+        finally
+        {
+            job.Teardown?.Invoke(instance, null);
+        }
+    }
+
+    static void LogResult(TestJob job, string message, ConsoleColor color)
+    {
+        lock (_consoleLock)
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            string info = job.Data != null ? $" [{string.Join(", ", job.Data)}]" : "";
+            Console.Write($"[{Thread.CurrentThread.ManagedThreadId}] {job.Method.Name}{info} ... ");
+            Console.ForegroundColor = color;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
+    }
+}
+
+// ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ
+public enum TestStatus { Passed, Failed, Skipped }
+
+public class TestJob
+{
+    public Type ClassType { get; set; }
+    public MethodInfo Method { get; set; }
+    public MethodInfo Setup { get; set; }
+    public MethodInfo Teardown { get; set; }
+    public object[] Data { get; set; }
 }
