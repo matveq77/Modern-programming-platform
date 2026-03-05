@@ -149,8 +149,6 @@ namespace OrderTests
             Assert.IsTrue(true);
         }
 
-        // Специальный тест, имитирующий долгую загрузку данных (500 мс)
-        // С помощью DataRow мы заставляем его запуститься 10 раз
         [TestMethod("Тяжелый тест имитации загрузки")]
         [DataRow(1)]
         [DataRow(2)]
@@ -164,12 +162,12 @@ namespace OrderTests
         [DataRow(10)]
         public async Task HeavyWorkTest(int iteration)
         {
-            await Task.Delay(500); // Имитация работы
+            await Task.Delay(500);
             Assert.IsTrue(true);
         }
 
         [TestMethod("Тест с критическим временем выполнения")]
-        [Timeout(800)] // Успеет, так как спит 600
+        [Timeout(800)]
         public async Task TimeoutSuccess()
         {
             await Task.Delay(600);
@@ -177,7 +175,7 @@ namespace OrderTests
         }
 
         [TestMethod("Тест, который будет прерван по тайм-ауту")]
-        [Timeout(300)] // НЕ успеет, так как спит 1000
+        [Timeout(300)]
         public async Task TimeoutFailure()
         {
             await Task.Delay(1000);

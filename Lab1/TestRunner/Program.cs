@@ -14,77 +14,62 @@ class Program
 
     static async Task Main(string[] args)
     {
-        int maxParallelism = 5; // Настройте количество потоков здесь
+        int parallelThreads = 5;
 
-        Console.WriteLine("=== ЛАБОРАТОРНАЯ РАБОТА №2: СРАВНЕНИЕ ЭФФЕКТИВНОСТИ ===\n");
+        Console.WriteLine("PERFORMANCE COMPARISON\n");
 
-        // 1. СТРОГО ПОСЛЕДОВАТЕЛЬНЫЙ ЗАПУСК
+        Console.WriteLine($"--- Execution in 1 thread (Sequential) ---");
         var sw = Stopwatch.StartNew();
-        await RunAllTests(parallel: false, maxParallelism: 1);
+        await RunTestEngine(maxParallelism: 1);
         sw.Stop();
         long sequentialTime = sw.ElapsedMilliseconds;
 
-        Console.WriteLine($"\n> Время последовательного выполнения: {sequentialTime} ms\n");
-        Console.WriteLine(new string('=', 50));
+        Console.WriteLine($"\n> Execution time (1 thread): {sequentialTime} ms\n");
+        Console.WriteLine(new string('=', 60));
 
-        // 2. ПАРАЛЛЕЛЬНЫЙ ЗАПУСК
+        Console.WriteLine($"--- Execution in {parallelThreads} threads (Parallel) ---");
         sw.Restart();
-        await RunAllTests(parallel: true, maxParallelism: maxParallelism);
+        await RunTestEngine(maxParallelism: parallelThreads);
         sw.Stop();
         long parallelTime = sw.ElapsedMilliseconds;
 
-        Console.WriteLine($"\n> Время параллельного выполнения ({maxParallelism} потока): {parallelTime} ms");
-        Console.WriteLine($"> Ускорение: {(double)sequentialTime / parallelTime:F2}x");
+        Console.WriteLine($"\n> Execution time ({parallelThreads} threads): {parallelTime} ms");
+        Console.WriteLine($"> Speedup: {(double)sequentialTime / parallelTime:F2}x");
+
+        Console.WriteLine("\nTesting completed.");
     }
 
-    static async Task RunAllTests(bool parallel, int maxParallelism)
+    static async Task RunTestEngine(int maxParallelism)
     {
         var assembly = typeof(ManagerTests).Assembly;
-
-        // ВЫЗОВ ТОГО САМОГО МЕТОДА, КОТОРОГО НЕ ХВАТАЛО
         var allTestJobs = DiscoverTests(assembly);
 
         int passed = 0, failed = 0, skipped = 0;
 
-        if (!parallel)
+        using var semaphore = new SemaphoreSlim(maxParallelism);
+
+        var tasks = allTestJobs.Select(async job =>
         {
-            Console.WriteLine($"Запуск {allTestJobs.Count} тестов ПОСЛЕДОВАТЕЛЬНО...");
-            foreach (var job in allTestJobs)
+            await semaphore.WaitAsync();
+            try
             {
                 var result = await ExecuteSingleTest(job);
-                if (result == TestStatus.Passed) passed++;
-                else if (result == TestStatus.Failed) failed++;
-                else skipped++;
+
+                if (result == TestStatus.Passed) Interlocked.Increment(ref passed);
+                else if (result == TestStatus.Failed) Interlocked.Increment(ref failed);
+                else Interlocked.Increment(ref skipped);
             }
-        }
-        else
-        {
-            Console.WriteLine($"Запуск {allTestJobs.Count} тестов ПАРАЛЛЕЛЬНО ({maxParallelism} потока)...");
-            using var semaphore = new SemaphoreSlim(maxParallelism);
-
-            var tasks = allTestJobs.Select(async job =>
+            finally
             {
-                await semaphore.WaitAsync();
-                try
-                {
-                    var result = await ExecuteSingleTest(job);
-                    if (result == TestStatus.Passed) Interlocked.Increment(ref passed);
-                    else if (result == TestStatus.Failed) Interlocked.Increment(ref failed);
-                    else Interlocked.Increment(ref skipped);
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            }).ToList();
+                semaphore.Release();
+            }
+        }).ToList();
 
-            await Task.WhenAll(tasks);
-        }
+        await Task.WhenAll(tasks);
 
-        Console.WriteLine($"\nРезультат: Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
+        Console.WriteLine($"\nTOTAL: Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
     }
 
-    // МЕТОД ДЛЯ СБОРА ТЕСТОВ (DISCOVERY)
     static List<TestJob> DiscoverTests(Assembly assembly)
     {
         var jobs = new List<TestJob>();
@@ -97,9 +82,7 @@ class Program
             var setup = methods.FirstOrDefault(m => m.GetCustomAttribute<SetupAttribute>() != null);
             var teardown = methods.FirstOrDefault(m => m.GetCustomAttribute<TeardownAttribute>() != null);
 
-            var tests = methods
-                .Where(m => m.GetCustomAttribute<TestMethodAttribute>() != null)
-                .OrderBy(m => m.GetCustomAttribute<TestMethodAttribute>().Priority);
+            var tests = methods.Where(m => m.GetCustomAttribute<TestMethodAttribute>() != null);
 
             foreach (var test in tests)
             {
@@ -146,7 +129,6 @@ class Program
                     convertedParams[i] = Convert.ChangeType(job.Data[i], methodParams[i].ParameterType);
             }
 
-            // Запуск теста с поддержкой тайм-аута
             var testTask = Task.Run(async () => {
                 var res = job.Method.Invoke(instance, convertedParams);
                 if (res is Task t) await t;
@@ -156,7 +138,7 @@ class Program
             {
                 if (await Task.WhenAny(testTask, Task.Delay(timeoutAttr.Milliseconds)) != testTask)
                 {
-                    LogResult(job, $"Timeout (> {timeoutAttr.Milliseconds}ms)", ConsoleColor.Red);
+                    LogResult(job, $"Timeout (> {timeoutAttr.Milliseconds} ms)", ConsoleColor.Red);
                     return TestStatus.Failed;
                 }
             }
@@ -183,7 +165,7 @@ class Program
         {
             Console.ForegroundColor = ConsoleColor.White;
             string info = job.Data != null ? $" [{string.Join(", ", job.Data)}]" : "";
-            Console.Write($"[{Thread.CurrentThread.ManagedThreadId}] {job.Method.Name}{info} ... ");
+            Console.Write($"[Thread {Thread.CurrentThread.ManagedThreadId}] {job.Method.Name}{info} ... ");
             Console.ForegroundColor = color;
             Console.WriteLine(message);
             Console.ResetColor();
@@ -191,7 +173,6 @@ class Program
     }
 }
 
-// ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ
 public enum TestStatus { Passed, Failed, Skipped }
 
 public class TestJob
