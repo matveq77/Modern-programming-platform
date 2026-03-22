@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -12,63 +11,65 @@ class Program
 {
     private static readonly object _consoleLock = new object();
 
-    static async Task Main(string[] args)
+    static void Main(string[] args)
     {
-        int parallelThreads = 5;
+        using var pool = new MyThreadPool(minThreads: 2, maxThreads: 10, idleTimeoutMs: 3000, taskMaxDurationMs: 5000);
 
-        Console.WriteLine("PERFORMANCE COMPARISON\n");
+        Console.WriteLine("=== ТЕСТИРОВАНИЕ С CUSTOM THREAD POOL ===");
 
-        Console.WriteLine($"--- Execution in 1 thread (Sequential) ---");
-        var sw = Stopwatch.StartNew();
-        await RunTestEngine(maxParallelism: 1);
-        sw.Stop();
-        long sequentialTime = sw.ElapsedMilliseconds;
-
-        Console.WriteLine($"\n> Execution time (1 thread): {sequentialTime} ms\n");
-        Console.WriteLine(new string('=', 60));
-
-        Console.WriteLine($"--- Execution in {parallelThreads} threads (Parallel) ---");
-        sw.Restart();
-        await RunTestEngine(maxParallelism: parallelThreads);
-        sw.Stop();
-        long parallelTime = sw.ElapsedMilliseconds;
-
-        Console.WriteLine($"\n> Execution time ({parallelThreads} threads): {parallelTime} ms");
-        Console.WriteLine($"> Speedup: {(double)sequentialTime / parallelTime:F2}x");
-
-        Console.WriteLine("\nTesting completed.");
-    }
-
-    static async Task RunTestEngine(int maxParallelism)
-    {
         var assembly = typeof(ManagerTests).Assembly;
         var allTestJobs = DiscoverTests(assembly);
 
-        int passed = 0, failed = 0, skipped = 0;
+        var extendedJobs = new List<TestJob>();
+        while (extendedJobs.Count < 60) extendedJobs.AddRange(allTestJobs);
 
-        using var semaphore = new SemaphoreSlim(maxParallelism);
+        // --- МОДЕЛИРОВАНИЕ НАГРУЗКИ ---
 
-        var tasks = allTestJobs.Select(async job =>
+        Console.WriteLine("\n>>> Единичные задачи (Проверка MinThreads)");
+        for (int i = 0; i < 3; i++)
         {
-            await semaphore.WaitAsync();
-            try
-            {
-                var result = await ExecuteSingleTest(job);
+            var job = extendedJobs[i];
+            pool.Execute(() => RunRealTest(job));
+            Thread.Sleep(300); // Небольшая пауза
+        }
 
-                if (result == TestStatus.Passed) Interlocked.Increment(ref passed);
-                else if (result == TestStatus.Failed) Interlocked.Increment(ref failed);
-                else Interlocked.Increment(ref skipped);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }).ToList();
+        Console.WriteLine("\n>>> Пиковая нагрузка (Проверка расширения до MaxThreads)");
+        for (int i = 3; i < 43; i++)
+        {
+            var job = extendedJobs[i];
+            pool.Execute(() => RunRealTest(job));
+        }
 
-        await Task.WhenAll(tasks);
+        Console.WriteLine("\n>>> Зависающая задача (Проверка замены потока)");
+        pool.Execute(() => {
+            int tid = Thread.CurrentThread.ManagedThreadId;
+            lock (_consoleLock) Console.WriteLine($"  [Thread {tid}] !!! ВНИМАНИЕ: Запущен бесконечный тест...");
+            while (true) { Thread.Sleep(1000); }
+        });
 
-        Console.WriteLine($"\nTOTAL: Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
+        Console.WriteLine("\n>>> Ожидание бездействия (Проверка адаптивного сжатия пула)...");
+        Thread.Sleep(10000);
+
+        Console.WriteLine("\n>>> Финальная проверка (Работа после сжатия)");
+        for (int i = 43; i < extendedJobs.Count; i++)
+        {
+            var job = extendedJobs[i];
+            pool.Execute(() => RunRealTest(job));
+        }
+
+        Thread.Sleep(5000);
+        Console.WriteLine("\n=================================================");
+        Console.WriteLine("ДЕМОНСТРАЦИЯ ЗАВЕРШЕНА.");
+        //Console.WriteLine("Проверьте заголовок окна или логи пула выше на предмет создания/удаления потоков.");
     }
+
+    // Обертка для запуска реального теста внутри пула
+    static void RunRealTest(TestJob job)
+    {
+        ExecuteSingleTest(job).GetAwaiter().GetResult();
+    }
+
+    // --- (Рефлексия и Исполнение) ---
 
     static List<TestJob> DiscoverTests(Assembly assembly)
     {
@@ -81,24 +82,15 @@ class Program
             var methods = type.GetMethods();
             var setup = methods.FirstOrDefault(m => m.GetCustomAttribute<SetupAttribute>() != null);
             var teardown = methods.FirstOrDefault(m => m.GetCustomAttribute<TeardownAttribute>() != null);
-
             var tests = methods.Where(m => m.GetCustomAttribute<TestMethodAttribute>() != null);
 
             foreach (var test in tests)
             {
                 var dataRows = test.GetCustomAttributes<DataRowAttribute>().ToList();
                 var runs = dataRows.Any() ? dataRows.Select(d => d.Data).ToList() : new List<object[]> { null };
-
                 foreach (var data in runs)
                 {
-                    jobs.Add(new TestJob
-                    {
-                        ClassType = type,
-                        Method = test,
-                        Setup = setup,
-                        Teardown = teardown,
-                        Data = data
-                    });
+                    jobs.Add(new TestJob { ClassType = type, Method = test, Setup = setup, Teardown = teardown, Data = data });
                 }
             }
         }
@@ -113,9 +105,7 @@ class Program
             return TestStatus.Skipped;
         }
 
-        var timeoutAttr = job.Method.GetCustomAttribute<TimeoutAttribute>();
         var instance = Activator.CreateInstance(job.ClassType);
-
         try
         {
             job.Setup?.Invoke(instance, null);
@@ -129,21 +119,9 @@ class Program
                     convertedParams[i] = Convert.ChangeType(job.Data[i], methodParams[i].ParameterType);
             }
 
-            var testTask = Task.Run(async () => {
-                var res = job.Method.Invoke(instance, convertedParams);
-                if (res is Task t) await t;
-            });
+            var result = job.Method.Invoke(instance, convertedParams);
+            if (result is Task t) await t;
 
-            if (timeoutAttr != null)
-            {
-                if (await Task.WhenAny(testTask, Task.Delay(timeoutAttr.Milliseconds)) != testTask)
-                {
-                    LogResult(job, $"Timeout (> {timeoutAttr.Milliseconds} ms)", ConsoleColor.Red);
-                    return TestStatus.Failed;
-                }
-            }
-
-            await testTask;
             LogResult(job, "OK", ConsoleColor.Green);
             return TestStatus.Passed;
         }
@@ -163,9 +141,10 @@ class Program
     {
         lock (_consoleLock)
         {
+            int tid = Thread.CurrentThread.ManagedThreadId;
             Console.ForegroundColor = ConsoleColor.White;
             string info = job.Data != null ? $" [{string.Join(", ", job.Data)}]" : "";
-            Console.Write($"[Thread {Thread.CurrentThread.ManagedThreadId}] {job.Method.Name}{info} ... ");
+            Console.Write($"  [Thread {tid}] {job.Method.Name}{info} ... ");
             Console.ForegroundColor = color;
             Console.WriteLine(message);
             Console.ResetColor();
@@ -173,8 +152,8 @@ class Program
     }
 }
 
+// Модели данных для тестов
 public enum TestStatus { Passed, Failed, Skipped }
-
 public class TestJob
 {
     public Type ClassType { get; set; }
