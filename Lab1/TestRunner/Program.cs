@@ -17,40 +17,35 @@ class Program
         Console.WriteLine("=== ЛАБОРАТОРНАЯ РАБОТА №3: ДИНАМИЧЕСКИЙ ПУЛ ПОТОКОВ ===\n");
 
         var assembly = typeof(ManagerTests).Assembly;
-        // Собираем тесты и сразу СОРТИРУЕМ по Priority (из ЛР 1)
         var allTestJobs = DiscoverTests(assembly)
             .OrderBy(j => j.Priority)
             .ToList();
 
-        // 1. ДЕМОНСТРАЦИЯ ЭФФЕКТИВНОСТИ МАСШТАБИРОВАНИЯ
+        // ДЕМОНСТРАЦИЯ ЭФФЕКТИВНОСТИ МАСШТАБИРОВАНИЯ
         RunEfficiencyBenchmark(allTestJobs);
 
         Console.WriteLine("\n" + new string('=', 60));
         Console.WriteLine(">>> ПЕРЕХОД К МОДЕЛИРОВАНИЮ СЛОЖНОЙ НАГРУЗКИ");
 
-        // 2. ОСНОВНОЙ ПУЛ ДЛЯ СЦЕНАРИЕВ
-        using var pool = new MyThreadPool(minThreads: 2, maxThreads: 10, idleTimeoutMs: 3000, taskMaxDurationMs: 5000);
+        // ОСНОВНОЙ ПУЛ ДЛЯ СЦЕНАРИЕВ
+        using var pool = new MyThreadPool(minThreads: 2, maxThreads: 10, idleTimeoutMs: 2000, taskMaxDurationMs: 5000);
 
-        // Сценарий: Всплеск нагрузки + Зависание
         Console.WriteLine("\n>>> Сценарий: Пиковая нагрузка и проверка замены зависших");
 
-        // Запускаем 40 тестов "пачкой"
         for (int i = 0; i < 40; i++)
         {
             var job = allTestJobs[i % allTestJobs.Count];
             pool.Execute(() => RunRealTest(job));
         }
 
-        // Добавляем зависающую задачу (Доп. задание)
         pool.Execute(() => {
             int tid = Thread.CurrentThread.ManagedThreadId;
             lock (_consoleLock) Console.WriteLine($"  [Thread {tid}] !!! ВНИМАНИЕ: Запущен бесконечный тест...");
             while (true) { Thread.Sleep(1000); }
         });
 
-        // Ожидание сжатия пула
         Console.WriteLine("\n>>> Ожидание бездействия (10 сек) для адаптивного сжатия...");
-        Thread.Sleep(10000);
+        Thread.Sleep(30000);
 
         Console.WriteLine("\nДЕМОНСТРАЦИЯ ЗАВЕРШЕНА.");
     }
@@ -60,9 +55,9 @@ class Program
         Console.WriteLine(">>> ТЕСТ ЭФФЕКТИВНОСТИ МАСШТАБИРОВАНИЯ (пачка из 20 тяжелых тестов)");
         var benchmarkJobs = jobs.Where(j => j.Method.Name.Contains("Heavy")).Take(20).ToList();
 
-        // Тест 1: Статический пул (всего 2 потока)
+        // Статический пул (всего 2 потока)
         Stopwatch sw = Stopwatch.StartNew();
-        using (var staticPool = new MyThreadPool(2, 2)) // min = max = 2
+        using (var staticPool = new MyThreadPool(2, 2))
         {
             CountdownEvent countdown = new CountdownEvent(benchmarkJobs.Count);
             foreach (var j in benchmarkJobs)
@@ -72,7 +67,7 @@ class Program
         sw.Stop();
         long staticTime = sw.ElapsedMilliseconds;
 
-        // Тест 2: Динамический пул (от 2 до 10 потоков)
+        // Динамический пул (от 2 до 10 потоков)
         sw.Restart();
         using (var dynamicPool = new MyThreadPool(2, 10))
         {
@@ -121,8 +116,8 @@ class Program
                         Setup = setup,
                         Teardown = teardown,
                         Data = data,
-                        Priority = attr.Priority, // Из ЛР 1
-                        Description = attr.Description // Из ЛР 1
+                        Priority = attr.Priority,
+                        Description = attr.Description
                     });
                 }
             }
@@ -132,7 +127,6 @@ class Program
 
     static async Task<TestStatus> ExecuteSingleTest(TestJob job)
     {
-        // Атрибут Ignore из ЛР 1
         if (job.Method.GetCustomAttribute<IgnoreAttribute>() != null)
         {
             LogResult(job, "Skipped", ConsoleColor.Yellow);

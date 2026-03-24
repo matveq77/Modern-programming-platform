@@ -14,14 +14,14 @@ namespace MyTestFramework
         private readonly int _minThreads;
         private readonly int _maxThreads;
         private readonly int _idleTimeoutMs;
-        private readonly int _taskMaxDurationMs; // Для замены зависших потоков
+        private readonly int _taskMaxDurationMs;
 
         private bool _isDisposed = false;
 
         public int CurrentThreadCount => _threads.Count;
         public int TasksInQueue => _taskQueue.Count;
 
-        public MyThreadPool(int minThreads = 2, int maxThreads = 10, int idleTimeoutMs = 3000, int taskMaxDurationMs = 5000)
+        public MyThreadPool(int minThreads = 2, int maxThreads = 10, int idleTimeoutMs = 2000, int taskMaxDurationMs = 5000)
         {
             _minThreads = minThreads;
             _maxThreads = maxThreads;
@@ -33,7 +33,6 @@ namespace MyTestFramework
                 CreateWorker();
             }
 
-            // Поток мониторинга состояния пула
             Thread monitor = new Thread(MonitorPool) { IsBackground = true, Name = "PoolMonitor" };
             monitor.Start();
         }
@@ -63,7 +62,6 @@ namespace MyTestFramework
         {
             lock (_taskQueue)
             {
-                // Если очередь растет и мы не достигли максимума — создаем поток
                 if (_taskQueue.Count > 0 && _threads.Count < _maxThreads)
                 {
                     CreateWorker();
@@ -75,12 +73,12 @@ namespace MyTestFramework
         {
             while (!_isDisposed)
             {
-                Thread.Sleep(1000);
+                //Thread.Sleep(1000);
                 DateTime now = DateTime.Now;
 
                 lock (_threads)
                 {
-                    // 1. Адаптивное сжатие (удаление лишних простаивающих потоков)
+                    // Адаптивное сжатие (удаление лишних простаивающих потоков)
                     if (_threads.Count > _minThreads)
                     {
                         var idleWorker = _threads.FirstOrDefault(w => w.IsIdle && (now - w.LastActiveTime).TotalMilliseconds > _idleTimeoutMs);
@@ -92,7 +90,7 @@ namespace MyTestFramework
                         }
                     }
 
-                    // 2. Дополнительно: Замена зависших потоков
+                    // Замена зависших потоков
                     for (int i = 0; i < _threads.Count; i++)
                     {
                         var w = _threads[i];
