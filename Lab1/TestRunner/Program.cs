@@ -14,23 +14,20 @@ class Program
 
     static void Main(string[] args)
     {
-        Console.WriteLine("=== ЛАБОРАТОРНАЯ РАБОТА №3: ДИНАМИЧЕСКИЙ ПУЛ ПОТОКОВ ===\n");
+        Console.WriteLine(">>> DYNAMIC THREAD POOL\n");
 
         var assembly = typeof(ManagerTests).Assembly;
-        var allTestJobs = DiscoverTests(assembly)
-            .OrderBy(j => j.Priority)
-            .ToList();
+        var allTestJobs = DiscoverTests(assembly).OrderBy(j => j.Priority).ToList();
 
-        // ДЕМОНСТРАЦИЯ ЭФФЕКТИВНОСТИ МАСШТАБИРОВАНИЯ
+        // 1. Бенчмарк эффективности
         RunEfficiencyBenchmark(allTestJobs);
 
         Console.WriteLine("\n" + new string('=', 60));
-        Console.WriteLine(">>> ПЕРЕХОД К МОДЕЛИРОВАНИЮ СЛОЖНОЙ НАГРУЗКИ");
 
-        // ОСНОВНОЙ ПУЛ ДЛЯ СЦЕНАРИЕВ
+        // 2. Основной пул
         using var pool = new MyThreadPool(minThreads: 2, maxThreads: 10, idleTimeoutMs: 2000, taskMaxDurationMs: 5000);
 
-        Console.WriteLine("\n>>> Сценарий: Пиковая нагрузка и проверка замены зависших");
+        Console.WriteLine("\n>>> BURST LOAD AND SHRINKING");
 
         for (int i = 0; i < 40; i++)
         {
@@ -38,24 +35,36 @@ class Program
             pool.Execute(() => RunRealTest(job));
         }
 
+        // Зависающая задача
         pool.Execute(() => {
             int tid = Thread.CurrentThread.ManagedThreadId;
-            lock (_consoleLock) Console.WriteLine($"  [Thread {tid}] !!! ВНИМАНИЕ: Запущен бесконечный тест...");
+            lock (_consoleLock) Console.WriteLine($"  [Thread {tid}] !!! HANGING TASK STARTED...");
             while (true) { Thread.Sleep(1000); }
         });
 
-        Console.WriteLine("\n>>> Ожидание бездействия (10 сек) для адаптивного сжатия...");
-        Thread.Sleep(30000);
+        Console.WriteLine("\n>>> Waiting for tasks to complete and POOL TO SHRINK...");
 
-        Console.WriteLine("\nДЕМОНСТРАЦИЯ ЗАВЕРШЕНА.");
+        // АКТИВНЫЙ МОНИТОРИНГ СЖАТИЯ
+        while (pool.CurrentThreadCount > 3 || pool.TasksInQueue > 0)
+        {
+            Thread.Sleep(1000);
+            lock (_consoleLock)
+            {
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine($"[Monitor] Active Threads: {pool.CurrentThreadCount}, Queue: {pool.TasksInQueue}");
+                Console.ResetColor();
+            }
+        }
+
+        Console.WriteLine("\n>>> POOL SUCCESSFULLY SHRUNK TO MINIMUM.");
+        Console.WriteLine("DEMONSTRATION COMPLETED.");
     }
 
     static void RunEfficiencyBenchmark(List<TestJob> jobs)
     {
-        Console.WriteLine(">>> ТЕСТ ЭФФЕКТИВНОСТИ МАСШТАБИРОВАНИЯ (пачка из 20 тяжелых тестов)");
+        Console.WriteLine(">>> EFFICIENCY BENCHMARK");
         var benchmarkJobs = jobs.Where(j => j.Method.Name.Contains("Heavy")).Take(20).ToList();
 
-        // Статический пул (всего 2 потока)
         Stopwatch sw = Stopwatch.StartNew();
         using (var staticPool = new MyThreadPool(2, 2))
         {
@@ -67,7 +76,6 @@ class Program
         sw.Stop();
         long staticTime = sw.ElapsedMilliseconds;
 
-        // Динамический пул (от 2 до 10 потоков)
         sw.Restart();
         using (var dynamicPool = new MyThreadPool(2, 10))
         {
@@ -79,10 +87,9 @@ class Program
         sw.Stop();
         long dynamicTime = sw.ElapsedMilliseconds;
 
-        Console.WriteLine($"\nРезультаты сравнения:");
-        Console.WriteLine($"- Статический пул (2 потока): {staticTime} мс");
-        Console.WriteLine($"- Динамический пул (до 10 потоков): {dynamicTime} мс");
-        Console.WriteLine($"- Эффективность масштабирования: Ускорение в {(double)staticTime / dynamicTime:F2} раз");
+        Console.WriteLine($"- Static (2): {staticTime} ms");
+        Console.WriteLine($"- Dynamic (10): {dynamicTime} ms");
+        Console.WriteLine($"- Speedup: {(double)staticTime / dynamicTime:F2}x");
     }
 
     static void RunRealTest(TestJob job)
@@ -94,32 +101,18 @@ class Program
     {
         var jobs = new List<TestJob>();
         var types = assembly.GetTypes().Where(t => t.GetCustomAttribute<TestClassAttribute>() != null);
-
         foreach (var type in types)
         {
             var methods = type.GetMethods();
             var setup = methods.FirstOrDefault(m => m.GetCustomAttribute<SetupAttribute>() != null);
             var teardown = methods.FirstOrDefault(m => m.GetCustomAttribute<TeardownAttribute>() != null);
-
             foreach (var test in methods.Where(m => m.GetCustomAttribute<TestMethodAttribute>() != null))
             {
                 var attr = test.GetCustomAttribute<TestMethodAttribute>();
                 var dataRows = test.GetCustomAttributes<DataRowAttribute>().ToList();
                 var runs = dataRows.Any() ? dataRows.Select(d => d.Data).ToList() : new List<object[]> { null };
-
                 foreach (var data in runs)
-                {
-                    jobs.Add(new TestJob
-                    {
-                        ClassType = type,
-                        Method = test,
-                        Setup = setup,
-                        Teardown = teardown,
-                        Data = data,
-                        Priority = attr.Priority,
-                        Description = attr.Description
-                    });
-                }
+                    jobs.Add(new TestJob { ClassType = type, Method = test, Setup = setup, Teardown = teardown, Data = data, Priority = attr.Priority, Description = attr.Description });
             }
         }
         return jobs;
@@ -127,27 +120,19 @@ class Program
 
     static async Task<TestStatus> ExecuteSingleTest(TestJob job)
     {
-        if (job.Method.GetCustomAttribute<IgnoreAttribute>() != null)
-        {
-            LogResult(job, "Skipped", ConsoleColor.Yellow);
-            return TestStatus.Skipped;
-        }
-
+        if (job.Method.GetCustomAttribute<IgnoreAttribute>() != null) return TestStatus.Skipped;
         var instance = Activator.CreateInstance(job.ClassType);
         try
         {
             job.Setup?.Invoke(instance, null);
-
             object[] args = null;
             if (job.Data != null)
             {
                 var targetParams = job.Method.GetParameters();
                 args = job.Data.Select((v, i) => Convert.ChangeType(v, targetParams[i].ParameterType)).ToArray();
             }
-
             var res = job.Method.Invoke(instance, args);
             if (res is Task t) await t;
-
             LogResult(job, "OK", ConsoleColor.Green);
             return TestStatus.Passed;
         }
@@ -157,10 +142,7 @@ class Program
             LogResult(job, $"Failed: {inner.Message}", ConsoleColor.Red);
             return TestStatus.Failed;
         }
-        finally
-        {
-            job.Teardown?.Invoke(instance, null);
-        }
+        finally { job.Teardown?.Invoke(instance, null); }
     }
 
     static void LogResult(TestJob job, string message, ConsoleColor color)
@@ -171,7 +153,6 @@ class Program
             Console.ForegroundColor = ConsoleColor.White;
             string desc = !string.IsNullOrEmpty(job.Description) ? $"({job.Description})" : "";
             string info = job.Data != null ? $" [{string.Join(", ", job.Data)}]" : "";
-
             Console.Write($"  [Thread {tid}] {job.Method.Name}{desc}{info} ... ");
             Console.ForegroundColor = color;
             Console.WriteLine(message);

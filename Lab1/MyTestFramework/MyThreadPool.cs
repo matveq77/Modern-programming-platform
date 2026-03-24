@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 
@@ -18,8 +17,8 @@ namespace MyTestFramework
 
         private bool _isDisposed = false;
 
-        public int CurrentThreadCount => _threads.Count;
-        public int TasksInQueue => _taskQueue.Count;
+        public int CurrentThreadCount { get { lock (_threads) return _threads.Count; } }
+        public int TasksInQueue { get { lock (_taskQueue) return _taskQueue.Count; } }
 
         public MyThreadPool(int minThreads = 2, int maxThreads = 10, int idleTimeoutMs = 2000, int taskMaxDurationMs = 5000)
         {
@@ -54,7 +53,7 @@ namespace MyTestFramework
                 var worker = new WorkerThread(this);
                 _threads.Add(worker);
                 worker.Start();
-                Log($"[Pool] Создан новый поток. Всего: {_threads.Count}", ConsoleColor.Cyan);
+                Log($"[Pool] Created new thread. Total: {_threads.Count}", ConsoleColor.Cyan);
             }
         }
 
@@ -62,9 +61,12 @@ namespace MyTestFramework
         {
             lock (_taskQueue)
             {
-                if (_taskQueue.Count > 0 && _threads.Count < _maxThreads)
+                lock (_threads)
                 {
-                    CreateWorker();
+                    if (_taskQueue.Count > 0 && _threads.Count < _maxThreads)
+                    {
+                        CreateWorker();
+                    }
                 }
             }
         }
@@ -73,40 +75,43 @@ namespace MyTestFramework
         {
             while (!_isDisposed)
             {
-                //Thread.Sleep(1000);
+                Thread.Sleep(500); // Даем потокам работать
                 DateTime now = DateTime.Now;
 
                 lock (_threads)
                 {
-                    // Адаптивное сжатие (удаление лишних простаивающих потоков)
+                    // 1. Адаптивное сжатие
                     if (_threads.Count > _minThreads)
                     {
-                        var idleWorker = _threads.FirstOrDefault(w => w.IsIdle && (now - w.LastActiveTime).TotalMilliseconds > _idleTimeoutMs);
+                        var idleWorker = _threads.FirstOrDefault(w =>
+                            w.IsIdle && (now - w.LastActiveTime).TotalMilliseconds > _idleTimeoutMs);
+
                         if (idleWorker != null)
                         {
                             idleWorker.Stop();
                             _threads.Remove(idleWorker);
-                            Log($"[Pool] Поток удален по простою. Осталось: {_threads.Count}", ConsoleColor.DarkYellow);
+                            Log($"[Pool] Thread {idleWorker.Id} removed due to inactivity. Remaining: {_threads.Count}", ConsoleColor.DarkYellow);
+
+                            // Просыпаемся, чтобы проверить условие цикла _running
+                            lock (_taskQueue) { Monitor.PulseAll(_taskQueue); }
                         }
                     }
 
-                    // Замена зависших потоков
+                    // 2. Замена зависших потоков
                     for (int i = 0; i < _threads.Count; i++)
                     {
                         var w = _threads[i];
                         if (w.IsWorking && (now - w.TaskStartTime).TotalMilliseconds > _taskMaxDurationMs)
                         {
-                            Log($"[Pool] Обнаружен зависший поток {w.Id}! Замена...", ConsoleColor.Magenta);
-                            w.Abandon(); // Помечаем как "зомби"
+                            Log($"[Pool] HANGING THREAD DETECTED {w.Id}! Replacing...", ConsoleColor.Magenta);
+                            w.Abandon();
                             _threads.RemoveAt(i);
-                            CreateWorker(); // Создаем новый взамен
+                            CreateWorker();
                             break;
                         }
                     }
                 }
-
-                // Мониторинг в консоль
-                Console.Title = $"Threads: {CurrentThreadCount} | Queue: {TasksInQueue} | Min: {_minThreads} | Max: {_maxThreads}";
+                Console.Title = $"Threads: {CurrentThreadCount} | Tasks: {TasksInQueue}";
             }
         }
 
@@ -131,7 +136,8 @@ namespace MyTestFramework
             private readonly MyThreadPool _pool;
             private Thread _thread;
             private bool _running = true;
-            public int Id => _thread.ManagedThreadId;
+            public int Id { get; }
+
             public bool IsIdle { get; private set; } = true;
             public bool IsWorking => !IsIdle;
             public DateTime LastActiveTime { get; private set; } = DateTime.Now;
@@ -141,11 +147,12 @@ namespace MyTestFramework
             {
                 _pool = pool;
                 _thread = new Thread(Run) { IsBackground = true };
+                Id = _thread.ManagedThreadId;
             }
 
             public void Start() => _thread.Start();
             public void Stop() => _running = false;
-            public void Abandon() { _running = false; _thread = null; }
+            public void Abandon() => _running = false;
 
             private void Run()
             {
@@ -157,7 +164,7 @@ namespace MyTestFramework
                         while (_pool._taskQueue.Count == 0 && _running && !_pool._isDisposed)
                         {
                             IsIdle = true;
-                            LastActiveTime = DateTime.Now;
+                            // LastActiveTime устанавливается ОДИН РАЗ при переходе в режим ожидания
                             Monitor.Wait(_pool._taskQueue, 1000);
                         }
 
@@ -170,10 +177,10 @@ namespace MyTestFramework
                     {
                         IsIdle = false;
                         TaskStartTime = DateTime.Now;
-                        try { task(); }
-                        catch { /* Отказоустойчивость: ловим ошибки внутри теста */ }
-                        LastActiveTime = DateTime.Now;
+                        try { task(); } catch { }
+
                         IsIdle = true;
+                        LastActiveTime = DateTime.Now; // Засекаем начало простоя
                     }
                 }
             }
