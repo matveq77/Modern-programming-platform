@@ -5,8 +5,28 @@ using System.Threading;
 
 namespace MyTestFramework
 {
+    public class ThreadPoolEventArgs : EventArgs
+    {
+        public int ThreadId { get; }
+        public string Message { get; }
+        public DateTime Timestamp { get; }
+
+        public ThreadPoolEventArgs(int threadId, string message)
+        {
+            ThreadId = threadId;
+            Message = message;
+            Timestamp = DateTime.Now;
+        }
+    }
+
     public class MyThreadPool : IDisposable
     {
+        public event EventHandler<ThreadPoolEventArgs> ThreadCreated;
+        public event EventHandler<ThreadPoolEventArgs> ThreadRemoved;
+        public event EventHandler<ThreadPoolEventArgs> TaskStarted;
+        public event EventHandler<ThreadPoolEventArgs> TaskCompleted;
+        public event EventHandler<ThreadPoolEventArgs> ThreadHanged;
+
         private readonly Queue<Action> _taskQueue = new Queue<Action>();
         private readonly List<WorkerThread> _threads = new List<WorkerThread>();
 
@@ -53,7 +73,8 @@ namespace MyTestFramework
                 var worker = new WorkerThread(this);
                 _threads.Add(worker);
                 worker.Start();
-                Log($"[Pool] Created new thread. Total: {_threads.Count}", ConsoleColor.Cyan);
+
+                ThreadCreated?.Invoke(this, new ThreadPoolEventArgs(worker.Id, "New thread created"));
             }
         }
 
@@ -75,12 +96,11 @@ namespace MyTestFramework
         {
             while (!_isDisposed)
             {
-                Thread.Sleep(500); // Даем потокам работать
+                Thread.Sleep(500);
                 DateTime now = DateTime.Now;
 
                 lock (_threads)
                 {
-                    // 1. Адаптивное сжатие
                     if (_threads.Count > _minThreads)
                     {
                         var idleWorker = _threads.FirstOrDefault(w =>
@@ -90,20 +110,20 @@ namespace MyTestFramework
                         {
                             idleWorker.Stop();
                             _threads.Remove(idleWorker);
-                            Log($"[Pool] Thread {idleWorker.Id} removed due to inactivity. Remaining: {_threads.Count}", ConsoleColor.DarkYellow);
 
-                            // Просыпаемся, чтобы проверить условие цикла _running
+                            ThreadRemoved?.Invoke(this, new ThreadPoolEventArgs(idleWorker.Id, "Thread removed due to inactivity"));
+
                             lock (_taskQueue) { Monitor.PulseAll(_taskQueue); }
                         }
                     }
 
-                    // 2. Замена зависших потоков
                     for (int i = 0; i < _threads.Count; i++)
                     {
                         var w = _threads[i];
                         if (w.IsWorking && (now - w.TaskStartTime).TotalMilliseconds > _taskMaxDurationMs)
                         {
-                            Log($"[Pool] HANGING THREAD DETECTED {w.Id}! Replacing...", ConsoleColor.Magenta);
+                            ThreadHanged?.Invoke(this, new ThreadPoolEventArgs(w.Id, "Thread hanging detected! Replacing..."));
+
                             w.Abandon();
                             _threads.RemoveAt(i);
                             CreateWorker();
@@ -111,17 +131,6 @@ namespace MyTestFramework
                         }
                     }
                 }
-                Console.Title = $"Threads: {CurrentThreadCount} | Tasks: {TasksInQueue}";
-            }
-        }
-
-        private void Log(string msg, ConsoleColor color)
-        {
-            lock (Console.Out)
-            {
-                Console.ForegroundColor = color;
-                Console.WriteLine(msg);
-                Console.ResetColor();
             }
         }
 
@@ -164,7 +173,6 @@ namespace MyTestFramework
                         while (_pool._taskQueue.Count == 0 && _running && !_pool._isDisposed)
                         {
                             IsIdle = true;
-                            // LastActiveTime устанавливается ОДИН РАЗ при переходе в режим ожидания
                             Monitor.Wait(_pool._taskQueue, 1000);
                         }
 
@@ -177,10 +185,15 @@ namespace MyTestFramework
                     {
                         IsIdle = false;
                         TaskStartTime = DateTime.Now;
+
+                        _pool.TaskStarted?.Invoke(_pool, new ThreadPoolEventArgs(Id, "Task started"));
+
                         try { task(); } catch { }
 
+                        _pool.TaskCompleted?.Invoke(_pool, new ThreadPoolEventArgs(Id, "Task finished"));
+
                         IsIdle = true;
-                        LastActiveTime = DateTime.Now; // Засекаем начало простоя
+                        LastActiveTime = DateTime.Now;
                     }
                 }
             }

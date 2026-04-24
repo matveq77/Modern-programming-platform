@@ -36,4 +36,18 @@ namespace MyTestFramework
         public int Milliseconds { get; }
         public TimeoutAttribute(int milliseconds) => Milliseconds = milliseconds;
     }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public class TestCaseSourceAttribute : Attribute
+    {
+        public string MethodName { get; }
+        public TestCaseSourceAttribute(string methodName) => MethodName = methodName;
+    }
+
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = true)]
+    public class CategoryAttribute : Attribute
+    {
+        public string Name { get; }
+        public CategoryAttribute(string name) => Name = name;
+    }
 }
