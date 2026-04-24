@@ -17,40 +17,38 @@ class Program
     {
         Console.WriteLine("=== МОДЕРНИЗИРОВАННЫЙ ТЕСТОВЫЙ ФРЕЙМВОРК (ЛР 4) ===\n");
 
-        // 1. Сбор всех тестов из сборки
-        var assembly = typeof(ProductTests).Assembly;
+        var assembly = typeof(AdvancvedTests).Assembly;
         var allTestJobs = DiscoverTests(assembly);
 
-        // 2. Инициализация пула потоков с ПОДПИСКОЙ НА СОБЫТИЯ (Требование ЛР4)
         using var pool = new MyThreadPool(minThreads: 2, maxThreads: 8, idleTimeoutMs: 3000);
 
         pool.ThreadCreated += (s, e) => LogSystem($"[POOL_EVENT] Создан поток {e.ThreadId}", ConsoleColor.Cyan);
         pool.ThreadRemoved += (s, e) => LogSystem($"[POOL_EVENT] Удален поток {e.ThreadId} (простой)", ConsoleColor.DarkYellow);
         pool.ThreadHanged += (s, e) => LogSystem($"[POOL_EVENT] ОБНАРУЖЕНО ЗАВИСАНИЕ в потоке {e.ThreadId}!", ConsoleColor.Magenta);
-        // События задач можно раскомментировать для очень подробного лога:
-        // pool.TaskStarted += (s, e) => LogSystem($"[TASK] Поток {e.ThreadId} взял задачу", ConsoleColor.DarkGray);
 
-        // --- ДЕМОНСТРАЦИЯ 1: Фильтрация тестов (через делегаты) ---
-        Console.WriteLine("\n>>> ШАГ 1: Запуск только критических тестов (Фильтрация по категории 'Critical')");
-        ExecuteFiltered(allTestJobs, pool, job => job.Categories.Contains("Critical"));
+        var executedSet = new HashSet<string>();
 
-        // --- ДЕМОНСТРАЦИЯ 2: Параметризованные тесты (yield return) ---
-        Console.WriteLine("\n>>> ШАГ 2: Запуск параметризованных тестов (TestCaseSource + yield return)");
-        ExecuteFiltered(allTestJobs, pool, job => job.Method.GetCustomAttribute<TestCaseSourceAttribute>() != null);
+        Console.WriteLine("\n>>> ШАГ 1: Фильтрация (Категория 'Critical')");
+        ExecuteSubset(allTestJobs, pool, job => job.Categories.Contains("Critical"), executedSet);
+        Thread.Sleep(1500);
 
-        // --- ДЕМОНСТРАЦИЯ 3: Expression Tree Assert (Дополнительно) ---
-        Console.WriteLine("\n>>> ШАГ 3: Демонстрация детального разбора ошибки (Expression Trees)");
-        pool.Execute(() => RunSingleTest(allTestJobs.FirstOrDefault(j => j.Method.Name == "TestExpressionFailure")));
+        Console.WriteLine("\n>>> ШАГ 2: Параметризация (yield return)");
+        ExecuteSubset(allTestJobs, pool, job => job.Method.GetCustomAttribute<TestCaseSourceAttribute>() != null, executedSet);
+        Thread.Sleep(1500);
 
-        // Ожидаем завершения основных задач
-        Thread.Sleep(2000);
+        Console.WriteLine("\n>>> ШАГ 3: Детальный Assert (Expression Trees)");
+        var exprTest = allTestJobs.FirstOrDefault(j => j.Method.Name == "TestExpressionTree");
+        if (exprTest != null) pool.Execute(() => RunSingleTest(exprTest));
+        Thread.Sleep(1500);
 
-        // --- ДЕМОНСТРАЦИЯ 4: Нагрузка и приоритеты (из прошлых ЛР) ---
-        Console.WriteLine("\n>>> ШАГ 4: Запуск оставшейся массы тестов (с учетом приоритетов)");
-        var remainingTests = allTestJobs.OrderBy(j => j.Priority).ToList();
-        foreach (var job in remainingTests) pool.Execute(() => RunSingleTest(job));
+        Console.WriteLine("\n>>> ШАГ 4: Запуск остальных тестов (с учетом приоритетов)");
+        var remaining = allTestJobs
+            .Where(j => !executedSet.Contains(j.Method.Name + (j.Data != null ? string.Join("", j.Data) : "")))
+            .OrderBy(j => j.Priority)
+            .ToList();
 
-        Console.WriteLine("\n>>> Мониторинг завершения и сжатия пула...");
+        foreach (var job in remaining) pool.Execute(() => RunSingleTest(job));
+
         while (pool.TasksInQueue > 0 || pool.CurrentThreadCount > 2)
         {
             Console.Title = $"Threads: {pool.CurrentThreadCount} | Tasks: {pool.TasksInQueue}";
@@ -61,33 +59,27 @@ class Program
         Console.ReadLine();
     }
 
-    // Метод для запуска тестов с применением фильтра-делегата (Требование ЛР4)
-    static void ExecuteFiltered(List<TestJob> jobs, MyThreadPool pool, Predicate<TestJob> filter)
+    static void ExecuteSubset(List<TestJob> jobs, MyThreadPool pool, Predicate<TestJob> filter, HashSet<string> executed)
     {
         var filtered = jobs.Where(j => filter(j)).ToList();
         foreach (var job in filtered)
         {
+            string key = job.Method.Name + (job.Data != null ? string.Join("", job.Data) : "");
+            executed.Add(key);
             pool.Execute(() => RunSingleTest(job));
         }
-        // Даем немного времени для вывода логов перед следующим шагом
-        Thread.Sleep(1000);
     }
 
     static void RunSingleTest(TestJob job)
     {
-        if (job == null) return;
-        if (job.Method.GetCustomAttribute<IgnoreAttribute>() != null) return;
+        if (job == null || job.Method.GetCustomAttribute<IgnoreAttribute>() != null) return;
 
         var instance = Activator.CreateInstance(job.ClassType);
         try
         {
             job.Setup?.Invoke(instance, null);
-
-            // Вызов метода (с параметрами или без)
             object res = job.Method.Invoke(instance, job.Data);
-
             if (res is Task t) t.GetAwaiter().GetResult();
-
             LogResult(job, "PASSED", ConsoleColor.Green);
         }
         catch (Exception ex)
@@ -116,9 +108,8 @@ class Program
             {
                 var attr = method.GetCustomAttribute<TestMethodAttribute>();
                 var categories = method.GetCustomAttributes<CategoryAttribute>().Select(c => c.Name).ToList();
-
-                // 1. Проверка на TestCaseSource (yield return) - ЛР4
                 var sourceAttr = method.GetCustomAttribute<TestCaseSourceAttribute>();
+
                 if (sourceAttr != null)
                 {
                     var sourceMethod = type.GetMethod(sourceAttr.MethodName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
@@ -126,41 +117,24 @@ class Program
                     {
                         var dataSet = (IEnumerable<object[]>)sourceMethod.Invoke(null, null);
                         foreach (var data in dataSet)
-                            jobs.Add(CreateJob(type, method, setup, teardown, data, attr, categories));
+                            jobs.Add(new TestJob { ClassType = type, Method = method, Setup = setup, Teardown = teardown, Data = data, Priority = attr.Priority, Description = attr.Description, Categories = categories });
                         continue;
                     }
                 }
 
-                // 2. Проверка на DataRow (старая фишка)
                 var dataRows = method.GetCustomAttributes<DataRowAttribute>().ToList();
                 if (dataRows.Any())
                 {
                     foreach (var row in dataRows)
-                        jobs.Add(CreateJob(type, method, setup, teardown, row.Data, attr, categories));
+                        jobs.Add(new TestJob { ClassType = type, Method = method, Setup = setup, Teardown = teardown, Data = row.Data, Priority = attr.Priority, Description = attr.Description, Categories = categories });
                 }
                 else
                 {
-                    // Обычный тест
-                    jobs.Add(CreateJob(type, method, setup, teardown, null, attr, categories));
+                    jobs.Add(new TestJob { ClassType = type, Method = method, Setup = setup, Teardown = teardown, Data = null, Priority = attr.Priority, Description = attr.Description, Categories = categories });
                 }
             }
         }
         return jobs;
-    }
-
-    static TestJob CreateJob(Type t, MethodInfo m, MethodInfo s, MethodInfo td, object[] d, TestMethodAttribute a, List<string> cats)
-    {
-        return new TestJob
-        {
-            ClassType = t,
-            Method = m,
-            Setup = s,
-            Teardown = td,
-            Data = d,
-            Priority = a.Priority,
-            Description = a.Description,
-            Categories = cats
-        };
     }
 
     static void LogResult(TestJob job, string status, ConsoleColor color)
@@ -168,8 +142,8 @@ class Program
         lock (_consoleLock)
         {
             int tid = Thread.CurrentThread.ManagedThreadId;
-            Console.ForegroundColor = ConsoleColor.White;
             string dataInfo = job.Data != null ? $" [{string.Join(", ", job.Data)}]" : "";
+            Console.ForegroundColor = ConsoleColor.White;
             Console.Write($"  [Thread {tid}] {job.Method.Name}{dataInfo} ... ");
             Console.ForegroundColor = color;
             Console.WriteLine(status);
@@ -188,7 +162,6 @@ class Program
     }
 }
 
-// Обновленная модель работы для поддержки категорий
 public class TestJob
 {
     public Type ClassType { get; set; }

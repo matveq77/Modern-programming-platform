@@ -74,7 +74,7 @@ namespace MyTestFramework
                 _threads.Add(worker);
                 worker.Start();
 
-                ThreadCreated?.Invoke(this, new ThreadPoolEventArgs(worker.Id, "New thread created"));
+                ThreadCreated?.Invoke(this, new ThreadPoolEventArgs(worker.Id, $"New thread created. Total: {_threads.Count}"));
             }
         }
 
@@ -111,7 +111,7 @@ namespace MyTestFramework
                             idleWorker.Stop();
                             _threads.Remove(idleWorker);
 
-                            ThreadRemoved?.Invoke(this, new ThreadPoolEventArgs(idleWorker.Id, "Thread removed due to inactivity"));
+                            ThreadRemoved?.Invoke(this, new ThreadPoolEventArgs(idleWorker.Id, $"Thread removed due to inactivity. Remaining: {_threads.Count}"));
 
                             lock (_taskQueue) { Monitor.PulseAll(_taskQueue); }
                         }
