@@ -24,10 +24,10 @@ class Program
 
         Console.WriteLine($"\nОбнаружено тестов: {allTestJobs.Count}\n");
 
-        Demo_LR1_AssertMethods();
-        Demo_LR1_SharedContext();
-        Demo_LR2_Sequential_vs_Parallel(allTestJobs);
-        Demo_LR3_ThreadPoolLoad(allTestJobs);
+        //Demo_LR1_AssertMethods();
+        //Demo_LR1_SharedContext();
+        //Demo_LR2_Sequential_vs_Parallel(allTestJobs);
+        //Demo_LR3_ThreadPoolLoad(allTestJobs);
         Demo_LR4_ParameterizedTests(allTestJobs);
         Demo_LR4_EventSystem();
         Demo_LR4_FilterByDelegate(allTestJobs);
