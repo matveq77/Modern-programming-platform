@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 namespace OrderTests
 {
     [TestClass]
+    [Author("Петров П.П.")]
     public class ManagerTests
     {
         private OrderManager _manager;
@@ -22,11 +23,16 @@ namespace OrderTests
             yield return new object[] { 0, 1000 };
             yield return new object[] { 10, 900 };
             yield return new object[] { 50, 500 };
+            yield return new object[] { 25, 750 };
+            yield return new object[] { 75, 250 };
         }
 
-        [TestMethod("Тест скидок через итератор")]
+        [TestMethod("Тест скидок через итератор (yield return)")]
         [TestCaseSource(nameof(GetDiscountData))]
         [Category("Critical")]
+        [Category("Parameterized")]
+        [Author("Петров П.П.")]
+        [Priority(1)]
         public void TestDiscountsIterated(int percent, int expected)
         {
             _manager.AddProduct(new Product { Name = "Item", Price = 1000m });
@@ -37,15 +43,22 @@ namespace OrderTests
         [DataRow(0, 1000)]
         [DataRow(10, 900)]
         [DataRow(100, 0)]
+        [Category("Critical")]
+        [Author("Петров П.П.")]
+        [Priority(1)]
         public void TestDiscounts(int percent, int expected)
         {
             _manager.AddProduct(new Product { Name = "Item", Price = 1000m });
             Assert.AreEqual((decimal)expected, _manager.CalculateTotal((decimal)percent));
         }
 
-        [TestMethod("Тест веса/количества (Граничные значения)")]
+        [TestMethod("Тест граничных значений количества товаров")]
         [DataRow(1)]
+        [DataRow(10)]
         [DataRow(50)]
+        [Category("Boundary")]
+        [Author("Иванов И.И.")]
+        [Priority(2)]
         public void TestProductCountLimits(int count)
         {
             for (int i = 0; i < count; i++)
@@ -54,6 +67,9 @@ namespace OrderTests
         }
 
         [TestMethod("Проверка поиска и свойств товара")]
+        [Category("Smoke")]
+        [Author("Петров П.П.")]
+        [Priority(2)]
         public void TestProductDetails()
         {
             var p = new Product { Id = 77, Name = "Gaming Console", Price = 500m };
@@ -63,6 +79,9 @@ namespace OrderTests
         }
 
         [TestMethod("Проверка защиты от некорректных данных")]
+        [Category("Critical")]
+        [Author("Иванов И.И.")]
+        [Priority(1)]
         public void TestSecurityAndValidation()
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => {
@@ -70,7 +89,10 @@ namespace OrderTests
             });
         }
 
-        [TestMethod("Асинхронное сохранение в БД (имитация)")]
+        [TestMethod("Асинхронное сохранение заказа")]
+        [Category("Async")]
+        [Author("Петров П.П.")]
+        [Priority(2)]
         public async Task TestDatabaseSaveAsync()
         {
             _manager.AddProduct(new Product { Name = "Server", Price = 2000 });
@@ -79,43 +101,61 @@ namespace OrderTests
         }
 
         [TestMethod("Специально проваленный тест: неверная сумма")]
+        [Category("FailDemo")]
+        [Author("Сидоров С.С.")]
+        [Priority(10)]
         public void TestFailedAssertion()
         {
             _manager.AddProduct(new Product { Name = "FailItem", Price = 100 });
             Assert.AreEqual(500m, _manager.CalculateTotal(0));
         }
 
-        [TestMethod("Тест с ошибкой в логике (Exception)")]
+        [TestMethod("Тест с непредвиденным исключением")]
+        [Category("FailDemo")]
+        [Author("Сидоров С.С.")]
+        [Priority(10)]
         public void TestUnexpectedError()
         {
             Product p = null;
             var name = p.Name;
         }
 
-        [TestMethod]
+        [TestMethod("Timeout: успешное завершение в срок")]
         [Timeout(2000)]
+        [Category("Timeout")]
+        [Author("Иванов И.И.")]
+        [Priority(3)]
         public async Task TimeoutSuccessTest()
         {
-            await Task.Delay(500);
+            await Task.Delay(300);
             Assert.IsTrue(true);
         }
 
-        [TestMethod]
-        [Timeout(500)]
+        [TestMethod("Timeout: превышение времени ожидания")]
+        [Timeout(300)]
+        [Category("Timeout")]
+        [Author("Иванов И.И.")]
+        [Priority(3)]
         public async Task TimeoutFailTest()
         {
             await Task.Delay(1000);
             Assert.IsTrue(true);
         }
 
-        [TestMethod("Тяжелый тест имитации загрузки")]
+        [TestMethod("Нагрузочный тест (имитация работы)")]
         [DataRow(1)]
         [DataRow(2)]
         [DataRow(3)]
+        [DataRow(4)]
+        [DataRow(5)]
+        [Category("Load")]
+        [Author("Петров П.П.")]
+        [Priority(4)]
         public async Task HeavyWorkTest(int iteration)
         {
-            await Task.Delay(500);
-            Assert.IsTrue(true);
+            await Task.Delay(200 + iteration * 50);
+            _manager.AddProduct(new Product { Name = $"Product{iteration}", Price = iteration * 10m });
+            Assert.IsTrue(_manager.ProductCount > 0);
         }
     }
 }

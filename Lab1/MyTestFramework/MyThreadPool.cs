@@ -35,10 +35,19 @@ namespace MyTestFramework
         private readonly int _idleTimeoutMs;
         private readonly int _taskMaxDurationMs;
 
-        private bool _isDisposed = false;
+        private volatile bool _isDisposed = false;
+
+        private int _tasksEnqueued = 0;
+        private int _tasksCompleted = 0;
+        private int _tasksFailed = 0;
 
         public int CurrentThreadCount { get { lock (_threads) return _threads.Count; } }
         public int TasksInQueue { get { lock (_taskQueue) return _taskQueue.Count; } }
+        public int TasksCompleted => _tasksCompleted;
+        public int TasksFailed => _tasksFailed;
+        public int TasksEnqueued => _tasksEnqueued;
+
+        private readonly CountdownEvent _completionEvent;
 
         public MyThreadPool(int minThreads = 2, int maxThreads = 10, int idleTimeoutMs = 2000, int taskMaxDurationMs = 5000)
         {
@@ -46,11 +55,10 @@ namespace MyTestFramework
             _maxThreads = maxThreads;
             _idleTimeoutMs = idleTimeoutMs;
             _taskMaxDurationMs = taskMaxDurationMs;
+            _completionEvent = new CountdownEvent(1);
 
             for (int i = 0; i < _minThreads; i++)
-            {
                 CreateWorker();
-            }
 
             Thread monitor = new Thread(MonitorPool) { IsBackground = true, Name = "PoolMonitor" };
             monitor.Start();
@@ -58,12 +66,31 @@ namespace MyTestFramework
 
         public void Execute(Action task)
         {
+            Interlocked.Increment(ref _tasksEnqueued);
             lock (_taskQueue)
             {
-                _taskQueue.Enqueue(task);
+                _taskQueue.Enqueue(() =>
+                {
+                    try { task(); }
+                    catch { Interlocked.Increment(ref _tasksFailed); }
+                });
                 Monitor.Pulse(_taskQueue);
             }
             AdjustPoolSize();
+        }
+
+        public void WaitAllTasks(int timeoutMs = 60000)
+        {
+            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            while (DateTime.Now < deadline)
+            {
+                bool queueEmpty;
+                bool allIdle;
+                lock (_taskQueue) { queueEmpty = _taskQueue.Count == 0; }
+                lock (_threads) { allIdle = _threads.All(t => t.IsIdle); }
+                if (queueEmpty && allIdle) return;
+                Thread.Sleep(100);
+            }
         }
 
         private void CreateWorker()
@@ -73,8 +100,7 @@ namespace MyTestFramework
                 var worker = new WorkerThread(this);
                 _threads.Add(worker);
                 worker.Start();
-
-                ThreadCreated?.Invoke(this, new ThreadPoolEventArgs(worker.Id, $"New thread created. Total: {_threads.Count}"));
+                ThreadCreated?.Invoke(this, new ThreadPoolEventArgs(worker.Id, $"Поток создан. Всего потоков: {_threads.Count}"));
             }
         }
 
@@ -85,9 +111,7 @@ namespace MyTestFramework
                 lock (_threads)
                 {
                     if (_taskQueue.Count > 0 && _threads.Count < _maxThreads)
-                    {
                         CreateWorker();
-                    }
                 }
             }
         }
@@ -110,9 +134,7 @@ namespace MyTestFramework
                         {
                             idleWorker.Stop();
                             _threads.Remove(idleWorker);
-
-                            ThreadRemoved?.Invoke(this, new ThreadPoolEventArgs(idleWorker.Id, $"Thread removed due to inactivity. Remaining: {_threads.Count}"));
-
+                            ThreadRemoved?.Invoke(this, new ThreadPoolEventArgs(idleWorker.Id, $"Поток удалён (простой > {_idleTimeoutMs}мс). Осталось: {_threads.Count}"));
                             lock (_taskQueue) { Monitor.PulseAll(_taskQueue); }
                         }
                     }
@@ -122,8 +144,7 @@ namespace MyTestFramework
                         var w = _threads[i];
                         if (w.IsWorking && (now - w.TaskStartTime).TotalMilliseconds > _taskMaxDurationMs)
                         {
-                            ThreadHanged?.Invoke(this, new ThreadPoolEventArgs(w.Id, "Thread hanging detected! Replacing..."));
-
+                            ThreadHanged?.Invoke(this, new ThreadPoolEventArgs(w.Id, $"Зависание обнаружено! Поток заменяется."));
                             w.Abandon();
                             _threads.RemoveAt(i);
                             CreateWorker();
@@ -132,6 +153,18 @@ namespace MyTestFramework
                     }
                 }
             }
+        }
+
+        internal void OnTaskStarted(int threadId)
+        {
+            TaskStarted?.Invoke(this, new ThreadPoolEventArgs(threadId, "Задача начата"));
+        }
+
+        internal void OnTaskCompleted(int threadId, bool failed)
+        {
+            if (failed) Interlocked.Increment(ref _tasksFailed);
+            else Interlocked.Increment(ref _tasksCompleted);
+            TaskCompleted?.Invoke(this, new ThreadPoolEventArgs(threadId, "Задача завершена"));
         }
 
         public void Dispose()
@@ -185,13 +218,13 @@ namespace MyTestFramework
                     {
                         IsIdle = false;
                         TaskStartTime = DateTime.Now;
+                        _pool.OnTaskStarted(Id);
 
-                        _pool.TaskStarted?.Invoke(_pool, new ThreadPoolEventArgs(Id, "Task started"));
+                        bool failed = false;
+                        try { task(); }
+                        catch { failed = true; }
 
-                        try { task(); } catch { }
-
-                        _pool.TaskCompleted?.Invoke(_pool, new ThreadPoolEventArgs(Id, "Task finished"));
-
+                        _pool.OnTaskCompleted(Id, failed);
                         IsIdle = true;
                         LastActiveTime = DateTime.Now;
                     }
